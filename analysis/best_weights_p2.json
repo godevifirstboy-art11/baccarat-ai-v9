@@ -1,0 +1,27 @@
+{
+  "weights": {
+    "freq": 0.026315224541543277,
+    "coverage": 0.2843985978616943,
+    "markov": 0.4266644085027192,
+    "momentum": 0.10957206332142713,
+    "color": 0.038804393551832524,
+    "least_recent": 0.1142453122207836
+  },
+  "metrics": {
+    "side": "p2",
+    "n": 885,
+    "exact": 0.2825,
+    "in_set": 0.5537,
+    "color": 0.5266,
+    "cover2": 0.8237,
+    "max_consecutive_loss": 3,
+    "loss_distribution": {
+      "1": 215,
+      "2": 36,
+      "3": 8
+    },
+    "rattrapage_count": 310,
+    "rattrapage_accuracy_inset": 0.5613,
+    "rattrapage_accuracy_cover2": 0.8323
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "p1": {
+    "weights": {
+      "freq": 0.32368894316266356,
+      "coverage": 0.015011932352174991,
+      "markov": 0.45087616173839223,
+      "momentum": 0.05225585387832519,
+      "color": 0.009004810180214833,
+      "least_recent": 0.1491622986882292
+    },
+    "result_summary": {
+      "side": "p1",
+      "n": 885,
+      "exact": 0.2847,
+      "in_set": 0.5548,
+      "color": 0.5446,
+      "cover2": 0.8181,
+      "max_consecutive_loss": 3,
+      "loss_distribution": {
+        "1": 228,
+        "2": 35,
+        "3": 5
+      },
+      "rattrapage_count": 313,
+      "rattrapage_accuracy_inset": 0.5974,
+      "rattrapage_accuracy_cover2": 0.8562
+    }
+  },
+  "p2": {
+    "weights": {
+      "freq": 0.09027284012412276,
+      "coverage": 0.27829826369005833,
+      "markov": 0.40160920799017685,
+      "momentum": 0.06173057590739281,
+      "color": 0.06462567096552443,
+      "least_recent": 0.10346344132272475
+    },
+    "result_summary": {
+      "side": "p2",
+      "n": 885,
+      "exact": 0.2768,
+      "in_set": 0.5435,
+      "color": 0.5266,
+      "cover2": 0.8192,
+      "max_consecutive_loss": 3,
+      "loss_distribution": {
+        "1": 222,
+        "2": 35,
+        "3": 8
+      },
+      "rattrapage_count": 315,
+      "rattrapage_accuracy_inset": 0.5587,
+      "rattrapage_accuracy_cover2": 0.8381
+    }
+  }
+}
