@@ -4,12 +4,14 @@
 'use strict';
 
 const V9 = window.V9;
-const STORAGE_KEY = 'v9-hands-v1';
+const STORAGE_KEY = 'v9-hands-v2';  // v2 schema: seq + session
+const LEGACY_KEY  = 'v9-hands-v1';
 const POLL_INTERVAL = 7000; // 7s
+const RESET_THRESHOLD = 100; // if new gameNum < lastGameNum - 100 => new session detected
 const $ = (sel, parent=document) => parent.querySelector(sel);
 
 const State = {
-  hands: [],           // parsed hands (sorted by gameNum)
+  hands: [],           // parsed hands tagged with seq + session
   prediction: null,    // current prediction object
   backtest: null,      // backtest stats (rolling 50)
   backtestFull: null,  // backtest on full sample
@@ -18,32 +20,132 @@ const State = {
   lastFetch: 0,
   status: 'init',
   deepLoaded: false,   // whether we've done the initial deep scrape
+  nextSeq: 1,
+  currentSession: 1,
+  forceNewSessionOnNext: false, // armed by user via "Reset detected" button
 };
 
 // ────────────────────── STORAGE ──────────────────────
 function loadHands() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      // Migrate v1 -> v2 (reconstruct seq + session)
+      const legacy = localStorage.getItem(LEGACY_KEY);
+      if (legacy) {
+        const arr = JSON.parse(legacy);
+        if (Array.isArray(arr)) {
+          const migrated = migrateLegacy(arr);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+          return migrated;
+        }
+      }
+      return [];
+    }
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
     return arr;
   } catch { return []; }
 }
+
+function migrateLegacy(arr) {
+  const sorted = arr.slice().sort((a,b) => a.gameNum - b.gameNum);
+  let seq = 1, session = 1, lastGN = -Infinity;
+  for (const h of sorted) {
+    if (lastGN > 0 && h.gameNum < lastGN - RESET_THRESHOLD) session++;
+    h.session = session;
+    h.seq = seq++;
+    lastGN = h.gameNum;
+  }
+  return sorted;
+}
+
 function saveHands(hands) {
   try {
-    // Keep only the most recent 1500 hands to control storage size
     const trimmed = hands.length > 1500 ? hands.slice(-1500) : hands;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
   } catch (e) {
     console.warn('Storage full:', e);
   }
 }
-function mergeHands(existing, fresh) {
+
+/**
+ * Merge fresh hands handling daily-cycle reset of gameNum.
+ *
+ * Telegram channel resets numbering each day (#1440 -> #1). We detect this
+ * by comparing each fresh hand's gameNum vs the latest known gameNum in
+ * chronological order: if it falls back hard (< lastGN - RESET_THRESHOLD),
+ * we open a new session.
+ *
+ * Composite key (session:gameNum) ensures the same gameNum in two different
+ * sessions never collides.
+ * Sort key = seq (monotonic, never wraps).
+ */
+function mergeHands(existing, fresh, forceNewSession = false) {
   const map = new Map();
-  for (const h of existing) map.set(h.gameNum, h);
-  for (const h of fresh) map.set(h.gameNum, h);
-  return [...map.values()].sort((a,b) => a.gameNum - b.gameNum);
+  let maxSeq = 0;
+  let lastSession = 1;
+  let lastSeqGN = -Infinity;
+
+  const existingSorted = existing.slice().sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
+  for (const h of existingSorted) {
+    const key = `${h.session ?? 1}:${h.gameNum}`;
+    map.set(key, h);
+    if ((h.seq ?? 0) > maxSeq) maxSeq = h.seq ?? 0;
+    lastSession = h.session ?? 1;
+    lastSeqGN = h.gameNum;
+  }
+
+  // Process fresh in chronological order. Telegram message_id is monotonic
+  // by post time so we use it when available, otherwise fall back to gameNum.
+  const freshSorted = fresh.slice().sort((a,b) => {
+    if (a.message_id != null && b.message_id != null) return a.message_id - b.message_id;
+    return a.gameNum - b.gameNum;
+  });
+
+  let currentSession = lastSession;
+  if (forceNewSession) {
+    currentSession++;
+    lastSeqGN = -Infinity; // disable auto-reset for very first fresh hand
+  }
+
+  for (const h of freshSorted) {
+    if (lastSeqGN > 0 && h.gameNum < lastSeqGN - RESET_THRESHOLD) {
+      currentSession++;
+    }
+    const key = `${currentSession}:${h.gameNum}`;
+    if (!map.has(key)) {
+      h.session = currentSession;
+      h.seq = ++maxSeq;
+      map.set(key, h);
+    } else {
+      const ex = map.get(key);
+      h.session = ex.session;
+      h.seq = ex.seq;
+      map.set(key, h);
+    }
+    lastSeqGN = h.gameNum;
+  }
+
+  State.currentSession = currentSession;
+  State.nextSeq = maxSeq + 1;
+
+  return [...map.values()].sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
+}
+
+// Manual reset: arms the next merge to open a fresh session.
+function triggerManualReset() {
+  if (!State.hands.length) {
+    showToast('Aucune main en memoire - rien a reinitialiser', 'error');
+    return;
+  }
+  State.forceNewSessionOnNext = true;
+  showToast('Nouvelle session armee : la prochaine main recue ouvrira un cycle', 'success');
+  const btn = document.getElementById('btn-new-session');
+  if (btn) {
+    btn.classList.add('armed');
+    btn.textContent = '⏳ Armée';
+  }
 }
 
 // ────────────────────── FETCH TELEGRAM ──────────────────────
@@ -90,13 +192,15 @@ function renderShell() {
         <div class="brand-mark"></div>
         <div>
           <div class="brand-title">Baccarat AI <span style="color:var(--accent)">V9</span></div>
-          <div class="brand-sub">Ultra C · Prédicteur enseigne J/B</div>
+          <div class="brand-sub">Ultra C · Prédicteur enseigne J/B · <span class="by-bicode">~by BiCode</span></div>
         </div>
       </div>
       <div class="topbar-right">
         <div class="chip" id="hand-counter">Main <strong>—</strong></div>
+        <div class="chip" id="session-chip" title="Session courante (cycle de numérotation Telegram)">Session <strong>1</strong></div>
         <div class="chip" id="sample-chip">Échantillon <strong>0</strong></div>
         <div class="status loading" id="conn-status">Connexion…</div>
+        <button class="btn-icon" id="btn-new-session" title="Forcer l'ouverture d'une nouvelle session si le reset minuit n'a pas été détecté automatiquement">🔄 Nouvelle session</button>
         <button class="btn-icon" id="btn-refresh" title="Rafraîchir maintenant">↻</button>
         <button class="btn-icon" id="btn-reload-deep" title="Recharger l'historique profond">⬇</button>
       </div>
@@ -109,7 +213,10 @@ function renderShell() {
             <span class="pred-side-icon">👤</span>
             <span>Joueur</span>
           </div>
-          <span class="conf-pill" id="conf-pill-p1">—</span>
+          <div class="pred-head-right">
+            <span class="conf-pill" id="conf-pill-p1">—</span>
+            <button class="btn-copy" id="btn-copy-p1" title="Copier la prédiction Joueur">📋 COPIER</button>
+          </div>
         </div>
         <div class="pred-card-visual">
           <div class="playing-card" id="playing-card-p1">
@@ -144,7 +251,10 @@ function renderShell() {
             <span class="pred-side-icon">🏦</span>
             <span>Banquier</span>
           </div>
-          <span class="conf-pill" id="conf-pill-p2">—</span>
+          <div class="pred-head-right">
+            <span class="conf-pill" id="conf-pill-p2">—</span>
+            <button class="btn-copy" id="btn-copy-p2" title="Copier la prédiction Banquier">📋 COPIER</button>
+          </div>
         </div>
         <div class="pred-card-visual">
           <div class="playing-card" id="playing-card-p2">
@@ -180,6 +290,7 @@ function renderShell() {
         <div class="reco-title" id="reco-title">Initialisation…</div>
         <div class="reco-text" id="reco-text">Chargement des données Telegram en cours.</div>
       </div>
+      <button class="btn-copy btn-copy-all" id="btn-copy-all" title="Copier la prédiction complète (J + B)">📋 TOUT COPIER</button>
     </section>
 
     <section class="metrics" id="metrics">
@@ -252,7 +363,9 @@ function renderShell() {
     </section>
 
     <footer class="footer">
-      Baccarat AI V9 Ultra C · Source live : <a href="https://t.me/statistika_baccara" target="_blank">@statistika_baccara</a><br>
+      <strong>Baccarat AI V9 Ultra C</strong> <span class="by-bicode">~by BiCode</span><br>
+      Source live : <a href="https://t.me/statistika_baccara" target="_blank">@statistika_baccara</a> ·
+      Cycle journalier auto-détecté · Bouton manuel disponible<br>
       Moteur entraîné sur 915 mains réelles · Backtest validé · Aucun chiffre inventé
     </footer>
   </div>
@@ -269,6 +382,92 @@ function renderShell() {
   });
   document.getElementById('btn-refresh').addEventListener('click', () => doFetchTick(true));
   document.getElementById('btn-reload-deep').addEventListener('click', () => doDeepReload());
+  document.getElementById('btn-new-session').addEventListener('click', () => triggerManualReset());
+  document.getElementById('btn-copy-p1').addEventListener('click', () => copyPrediction('p1'));
+  document.getElementById('btn-copy-p2').addEventListener('click', () => copyPrediction('p2'));
+  document.getElementById('btn-copy-all').addEventListener('click', () => copyPrediction('all'));
+}
+
+// ────────────────────── COPY PREDICTION ──────────────────────
+function formatSideBlock(side, predObj) {
+  const label = side === 'p1' ? 'JOUEUR' : 'BANQUIER';
+  const emoji = side === 'p1' ? '👤' : '🏦';
+  const confPct = (predObj.confidence * 100).toFixed(1);
+  const cls = V9.classifyConfidence(predObj.confidence);
+  const niveau = cls === 'high' ? 'HAUTE' : cls === 'mid' ? 'MOYENNE' : 'FAIBLE';
+  const colorBest   = V9.isRed(predObj.best)   ? 'rouge' : 'noir';
+  const colorSecond = V9.isRed(predObj.second) ? 'rouge' : 'noir';
+  const modeLabel = predObj.mode === 'rattrapage' ? '\n⚠️ Mode rattrapage (couverture étendue)' : '';
+  return `${emoji} ${label}
+Enseigne : ${predObj.best}  (${V9.SUIT_NAME[predObj.best]} · ${colorBest})
+Plan B   : ${predObj.second}  (${V9.SUIT_NAME[predObj.second]} · ${colorSecond})
+Confiance: ${confPct}%  [${niveau}]${modeLabel}`;
+}
+
+function copyPrediction(target) {
+  if (!State.prediction) {
+    showToast('Aucune prédiction disponible', 'error');
+    return;
+  }
+  const p = State.prediction;
+  const sessionLabel = State.currentSession > 1 ? ` · S${State.currentSession}` : '';
+  const header = `🎴 Baccarat AI V9 · ~by BiCode
+━━━━━━━━━━━━━━━━━━━━
+Main #${p.gameNumNext ?? '—'}${sessionLabel}`;
+
+  let text, toastMsg, btnId;
+  if (target === 'p1') {
+    text = `${header}\n\n${formatSideBlock('p1', p.player)}\n━━━━━━━━━━━━━━━━━━━━`;
+    toastMsg = '👤 Joueur copié ✓';
+    btnId = 'btn-copy-p1';
+  } else if (target === 'p2') {
+    text = `${header}\n\n${formatSideBlock('p2', p.banker)}\n━━━━━━━━━━━━━━━━━━━━`;
+    toastMsg = '🏦 Banquier copié ✓';
+    btnId = 'btn-copy-p2';
+  } else {
+    // 'all'
+    text = `${header}\n\n${formatSideBlock('p1', p.player)}\n\n${formatSideBlock('p2', p.banker)}\n\n💡 ${p.recommendation.title}\n${p.recommendation.text}\n━━━━━━━━━━━━━━━━━━━━`;
+    toastMsg = '📋 Prédiction complète copiée ✓';
+    btnId = 'btn-copy-all';
+  }
+
+  copyToClipboard(text).then(ok => {
+    if (ok) {
+      showToast(toastMsg, 'success');
+      const btn = document.getElementById(btnId);
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = '✅ Copié !';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
+      }
+    } else {
+      showToast('Échec de la copie — copie manuelle requise', 'error');
+    }
+  });
+}
+
+async function copyToClipboard(text) {
+  // Modern path
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) { /* fallback */ }
+  }
+  // Legacy fallback
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
 }
 
 // ────────────────────── RENDER PARTS ──────────────────────
@@ -294,6 +493,11 @@ function renderPrediction() {
   const p = State.prediction;
   document.getElementById('hand-counter').innerHTML = `Main <strong>#${p.gameNumNext ?? '—'}</strong>`;
   document.getElementById('sample-chip').innerHTML = `Échantillon <strong>${p.basedOn}</strong>`;
+  const sessChip = document.getElementById('session-chip');
+  if (sessChip) {
+    sessChip.innerHTML = `Session <strong>${State.currentSession}</strong>`;
+    sessChip.classList.toggle('multi-session', State.currentSession > 1);
+  }
 
   renderSideCard('p1', p.player, '#card-player');
   renderSideCard('p2', p.banker, '#card-banker');
@@ -388,15 +592,27 @@ function renderHistory() {
   cnt.textContent = `(${State.hands.length})`;
   if (!hands.length) { list.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Aucune main encore</div>'; return; }
 
-  // We need backtest history entries to overlay predictions; let's recompute on the fly the last 60 predictions
+  // Backtest history keyed by composite session:gameNum (resilient to daily reset).
   let predMap = new Map();
   if (State.backtest && State.backtest.history) {
-    for (const h of State.backtest.history) predMap.set(h.gameNum, h);
+    for (const hh of State.backtest.history) {
+      const k = `${hh.session ?? 1}:${hh.gameNum}`;
+      predMap.set(k, hh);
+    }
   }
+
+  // Detect session boundaries to insert a divider in the list
+  let lastRenderedSession = null;
 
   let html = '';
   for (const h of hands) {
-    const predEntry = predMap.get(h.gameNum);
+    const key = `${h.session ?? 1}:${h.gameNum}`;
+    const predEntry = predMap.get(key);
+    // Session divider (only when changing - hands are reversed so newer first)
+    if (lastRenderedSession !== null && lastRenderedSession !== (h.session ?? 1)) {
+      html += `<div class="session-divider"><span>— Session ${lastRenderedSession} —</span></div>`;
+    }
+    lastRenderedSession = h.session ?? 1;
     const p1Display = h.p1_suits.map(s => `<span class="h-suit-mini ${V9.isRed(s)?'red':'black'}">${s}</span>`).join('');
     const p2Display = h.p2_suits.map(s => `<span class="h-suit-mini ${V9.isRed(s)?'red':'black'}">${s}</span>`).join('');
     let p1Pred = '', p2Pred = '';
@@ -408,8 +624,9 @@ function renderHistory() {
       p1Pred = `<span class="h-pred ${cls1}" title="Prédiction : ${predEntry.pred_p1}">${predEntry.pred_p1} ${ico1}</span>`;
       p2Pred = `<span class="h-pred ${cls2}" title="Prédiction : ${predEntry.pred_p2}">${predEntry.pred_p2} ${ico2}</span>`;
     }
+    const sessBadge = (h.session ?? 1) > 1 ? `<span class="h-session">S${h.session}</span>` : '';
     html += `<div class="history-row">
-      <div class="h-gameNum">#${h.gameNum}</div>
+      <div class="h-gameNum">#${h.gameNum}${sessBadge}</div>
       <div class="h-side">
         <div class="h-side-label">J ${h.p1_score}</div>
         <div class="h-suits">${p1Display}</div>
@@ -537,13 +754,25 @@ async function doFetchTick(force=false) {
     if (force) showToast('Échec de la connexion Telegram', 'error');
     return;
   }
+  const beforeSession = State.currentSession;
   const before = State.hands.length;
-  State.hands = mergeHands(State.hands, fresh);
+  const forceNew = State.forceNewSessionOnNext;
+  State.hands = mergeHands(State.hands, fresh, forceNew);
+  if (forceNew) {
+    State.forceNewSessionOnNext = false;
+    const btn = document.getElementById('btn-new-session');
+    if (btn) { btn.classList.remove('armed'); btn.textContent = '🔄 Nouvelle session'; }
+  }
   const newCount = State.hands.length - before;
+  const newSessionDetected = State.currentSession > beforeSession;
   saveHands(State.hands);
   setStatus('live','En direct');
   recomputeAll();
-  if (force) showToast(newCount ? `+${newCount} nouvelle(s) main(s)` : 'Aucune nouvelle main', 'success');
+  if (newSessionDetected) {
+    showToast(`🔄 Nouvelle session détectée (#${State.currentSession}) — recalibrage en cours`, 'success');
+  } else if (force) {
+    showToast(newCount ? `+${newCount} nouvelle(s) main(s)` : 'Aucune nouvelle main', 'success');
+  }
 }
 
 async function doDeepReload() {
@@ -563,7 +792,7 @@ async function doDeepReload() {
   State.deepLoaded = true;
   setStatus('live','En direct');
   recomputeAll();
-  showToast(`Historique chargé : ${State.hands.length} mains`, 'success');
+  showToast(`Historique chargé : ${State.hands.length} mains · ${State.currentSession} session(s)`, 'success');
 }
 
 async function boot() {

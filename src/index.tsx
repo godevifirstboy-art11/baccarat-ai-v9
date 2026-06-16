@@ -171,7 +171,7 @@ const SHELL_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#0a0a14"/>
-<title>Baccarat AI V9 Ultra C — Prédicteur d'enseigne J/B</title>
+<title>Baccarat AI V9 Ultra C ~by BiCode · Prédicteur enseigne J/B</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E♠%3C/text%3E%3C/svg%3E"/>
@@ -188,7 +188,7 @@ const SHELL_HTML = `<!DOCTYPE html>
         <span style="color:#1a1a1a">♣</span>
       </div>
       <div class="splash-title">Baccarat AI V9</div>
-      <div class="splash-sub">Ultra C — Connexion à Telegram…</div>
+      <div class="splash-sub">Ultra C <span style="opacity:.7">~by BiCode</span> — Connexion à Telegram…</div>
       <div class="splash-progress"><div class="splash-bar"></div></div>
     </div>
   </div>

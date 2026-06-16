@@ -218,15 +218,24 @@ NS.colorOf = (s) => RED.has(s) ? 'red' : 'black';
  * state.lastBest: { p1, p2 } – previous best predictions (for avoidance)
  */
 NS.predictNext = function(ctx, state = {}) {
-  const sorted = [...ctx].sort((a,b) => a.gameNum - b.gameNum);
+  // Sort by seq (monotonic, never wraps) when available; fallback gameNum for legacy data
+  const sorted = [...ctx].sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
   const playerMode = (state.lossStreakP1 && state.lossStreakP1 >= 1) ? 'rattrapage' : 'normal';
   const bankerMode = (state.lossStreakP2 && state.lossStreakP2 >= 1) ? 'rattrapage' : 'normal';
   const player = predictSide(sorted, 'p1', playerMode, playerMode==='rattrapage' ? (state.lastBest?.p1 || null) : null);
   const banker = predictSide(sorted, 'p2', bankerMode, bankerMode==='rattrapage' ? (state.lastBest?.p2 || null) : null);
   const recommendation = computeRecommendation(player, banker);
+  const last = sorted.length ? sorted[sorted.length-1] : null;
+  // gameNumNext = gameNum+1, but if hit reset threshold (e.g. ≥1440), display "#1 (nouvelle session)"
+  let gameNumNext = null;
+  if (last) {
+    gameNumNext = last.gameNum + 1;
+  }
   return {
-    gameNumNext: sorted.length ? sorted[sorted.length-1].gameNum + 1 : null,
+    gameNumNext,
     basedOn: sorted.length,
+    lastGameNum: last ? last.gameNum : null,
+    lastSession: last ? (last.session ?? 1) : null,
     player, banker,
     recommendation,
   };
@@ -270,7 +279,7 @@ function computeRecommendation(p, b) {
  * Useful for the "Performances" panel (last 50 hands).
  */
 NS.backtest = function(hands, windowFromEnd = null) {
-  const sorted = [...hands].sort((a,b) => a.gameNum - b.gameNum);
+  const sorted = [...hands].sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
   const startIdx = windowFromEnd ? Math.max(30, sorted.length - windowFromEnd) : 30;
   const stats = {
     n: 0,
@@ -330,6 +339,8 @@ NS.backtest = function(hands, windowFromEnd = null) {
     lastBestP1 = p.best; lastBestP2 = b.best;
     stats.history.push({
       gameNum: actual.gameNum,
+      seq: actual.seq,
+      session: actual.session,
       raw: actual.raw,
       pred_p1: p.best, conf_p1: p.confidence, mode_p1: playerMode,
       pred_p2: b.best, conf_p2: b.confidence, mode_p2: bankerMode,

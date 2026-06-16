@@ -105,11 +105,87 @@ body{
 button{font-family:inherit;cursor:pointer;}
 .btn-icon{
   background:rgba(255,255,255,.05);border:1px solid var(--line);
-  width:36px;height:36px;border-radius:10px;color:var(--muted-2);
-  display:flex;align-items:center;justify-content:center;font-size:15px;
+  min-width:36px;height:36px;padding:0 10px;border-radius:10px;color:var(--muted-2);
+  display:inline-flex;align-items:center;justify-content:center;gap:5px;
+  font-size:12px;font-weight:600;letter-spacing:.02em;white-space:nowrap;
   transition:all .15s;
 }
 .btn-icon:hover{background:rgba(255,255,255,.10);color:var(--text);border-color:var(--line-2);}
+.btn-icon.armed{
+  background:linear-gradient(135deg,rgba(249,115,22,.25),rgba(249,115,22,.08));
+  border-color:rgba(249,115,22,.55);color:#fdba74;
+  animation:pulse-armed 1.4s ease-in-out infinite;
+}
+@keyframes pulse-armed{
+  0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,.35);}
+  50%{box-shadow:0 0 0 5px rgba(249,115,22,0);}
+}
+
+/* By BiCode signature */
+.by-bicode{
+  color:var(--gold);font-weight:700;letter-spacing:.04em;
+  text-shadow:0 0 12px rgba(255,200,87,.35);
+}
+
+/* Multi-session chip highlight */
+.chip.multi-session{
+  border-color:rgba(249,115,22,.4);
+  background:rgba(249,115,22,.08);
+  color:#fdba74;
+}
+.chip.multi-session strong{color:#fed7aa;}
+
+/* Header right side: allow wrap on mobile */
+.topbar-right{flex-wrap:wrap;justify-content:flex-end;}
+
+/* Wrapper inside .pred-head for pill + copy button */
+.pred-head-right{
+  display:flex;align-items:center;gap:8px;
+}
+
+/* COPY button on prediction cards */
+.btn-copy{
+  background:rgba(124,92,255,.10);
+  border:1px solid rgba(124,92,255,.35);
+  color:#c4b5fd;
+  padding:5px 10px;border-radius:8px;
+  font-size:11px;font-weight:700;letter-spacing:.06em;
+  cursor:pointer;transition:all .15s;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.btn-copy:hover{
+  background:rgba(124,92,255,.20);
+  border-color:rgba(124,92,255,.55);
+  color:#ddd6fe;transform:translateY(-1px);
+}
+.btn-copy:active{transform:translateY(0);}
+.btn-copy.copied{
+  background:rgba(34,197,94,.18);
+  border-color:rgba(34,197,94,.55);
+  color:#86efac;
+}
+
+/* Session divider in history */
+.session-divider{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 4px 6px;
+  font-size:10px;font-weight:700;letter-spacing:.12em;
+  color:var(--gold);text-transform:uppercase;
+}
+.session-divider::before,.session-divider::after{
+  content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,200,87,.35),transparent);
+}
+.session-divider span{padding:0 6px;}
+
+/* Session badge on history rows */
+.h-session{
+  display:inline-block;margin-left:6px;
+  font-size:9px;font-weight:700;letter-spacing:.05em;
+  color:#fdba74;background:rgba(249,115,22,.12);
+  border:1px solid rgba(249,115,22,.35);
+  padding:1px 5px;border-radius:6px;vertical-align:middle;
+}
 
 /* PREDICTION HERO — two big cards Joueur / Banquier */
 .predict-hero{
@@ -389,3 +465,152 @@ button{font-family:inherit;cursor:pointer;}
 }
 .footer a{color:var(--accent);text-decoration:none;}
 .footer a:hover{text-decoration:underline;}
+
+/* ═══════════════════════════════════════════════════════════════
+   V9.1 — Nouveaux éléments : COPY, NEW SESSION, BRANDING, DIVIDER
+   ═══════════════════════════════════════════════════════════════ */
+
+/* "~by BiCode" signature */
+.by-bicode{
+  display:inline-block;
+  color:#c084fc;
+  font-weight:700;
+  font-style:italic;
+  letter-spacing:.02em;
+  text-shadow:0 0 12px rgba(192,132,252,.35);
+}
+.brand-sub .by-bicode{font-size:11px;}
+.footer .by-bicode{font-size:12px;}
+
+/* Right side of pred head must allow conf pill + copy button */
+.pred-head-right{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+}
+
+/* Generic copy button */
+.btn-copy{
+  background:linear-gradient(135deg,rgba(124,92,255,.18),rgba(34,211,238,.12));
+  border:1px solid rgba(124,92,255,.4);
+  color:#dcd7ff;
+  padding:6px 12px;
+  border-radius:10px;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.06em;
+  cursor:pointer;
+  transition:all .15s ease;
+  font-family:inherit;
+  white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;
+}
+.btn-copy:hover{
+  background:linear-gradient(135deg,rgba(124,92,255,.32),rgba(34,211,238,.22));
+  border-color:rgba(124,92,255,.7);
+  transform:translateY(-1px);
+  box-shadow:0 6px 20px rgba(124,92,255,.25);
+}
+.btn-copy:active{transform:translateY(0);}
+.btn-copy.copied{
+  background:linear-gradient(135deg,rgba(34,197,94,.35),rgba(34,197,94,.18))!important;
+  border-color:rgba(34,197,94,.7)!important;
+  color:#bbf7d0!important;
+  animation:copy-pulse .5s ease;
+}
+@keyframes copy-pulse{
+  0%{transform:scale(1);}
+  50%{transform:scale(1.08);}
+  100%{transform:scale(1);}
+}
+
+/* Big "TOUT COPIER" button inside the recommendation panel */
+.btn-copy-all{
+  margin-left:auto;
+  padding:10px 18px;
+  font-size:12px;
+  background:linear-gradient(135deg,rgba(124,92,255,.32),rgba(34,211,238,.22));
+  border-color:rgba(124,92,255,.6);
+  align-self:center;
+  flex-shrink:0;
+}
+.recommendation{
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+.recommendation .reco-content{flex:1;}
+
+/* "Nouvelle session" header button */
+#btn-new-session{
+  font-size:11px;
+  padding:6px 12px;
+  width:auto;
+  background:linear-gradient(135deg,rgba(249,115,22,.18),rgba(249,115,22,.08));
+  border:1px solid rgba(249,115,22,.35);
+  color:#fed7aa;
+  font-weight:700;
+  white-space:nowrap;
+  border-radius:10px;
+}
+#btn-new-session:hover{
+  background:linear-gradient(135deg,rgba(249,115,22,.32),rgba(249,115,22,.18));
+  border-color:rgba(249,115,22,.6);
+  box-shadow:0 4px 14px rgba(249,115,22,.25);
+}
+#btn-new-session.armed{
+  background:linear-gradient(135deg,rgba(249,115,22,.45),rgba(249,115,22,.25))!important;
+  border-color:rgba(249,115,22,.85)!important;
+  color:#fff!important;
+  animation:armed-blink 1.4s ease infinite;
+}
+@keyframes armed-blink{
+  0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,.6);}
+  50%{box-shadow:0 0 0 8px rgba(249,115,22,0);}
+}
+
+/* Session chip in topbar */
+#session-chip strong{color:#fdba74;}
+
+/* Session divider in history */
+.session-divider{
+  display:flex;align-items:center;justify-content:center;
+  margin:14px 0 10px;
+  position:relative;
+}
+.session-divider::before,.session-divider::after{
+  content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(249,115,22,.5),transparent);
+}
+.session-divider span{
+  padding:4px 14px;
+  font-size:10px;
+  font-weight:800;
+  color:#fdba74;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  background:rgba(249,115,22,.08);
+  border:1px solid rgba(249,115,22,.3);
+  border-radius:8px;
+  margin:0 10px;
+}
+
+/* Session badge inside history row */
+.h-session{
+  display:inline-block;
+  margin-left:6px;
+  padding:1px 6px;
+  border-radius:6px;
+  background:rgba(249,115,22,.18);
+  color:#fdba74;
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.05em;
+  vertical-align:middle;
+}
+
+/* Responsive: stack the recommendation button under the text */
+@media (max-width: 680px){
+  .recommendation{flex-direction:column;align-items:stretch;}
+  .btn-copy-all{margin-left:0;width:100%;}
+  .pred-head-right{flex-direction:row;}
+  #btn-new-session{order:-1;width:100%;justify-content:center;display:flex;}
+}
