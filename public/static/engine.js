@@ -217,25 +217,36 @@ NS.colorOf = (s) => RED.has(s) ? 'red' : 'black';
  * state.lossSide: 'p1' or 'p2' if last prediction lost on either side (drives rattrapage)
  * state.lastBest: { p1, p2 } – previous best predictions (for avoidance)
  */
+/**
+ * Sort hands by REAL chronological order using Telegram message_id.
+ * message_id is strictly monotonic by post time, so it works even when
+ * the channel resets gameNum from #1440 back to #1 at midnight.
+ * Fallback to gameNum only for very old data with no message_id.
+ */
+function sortChrono(hands) {
+  return [...hands].sort((a, b) => {
+    if (a.message_id != null && b.message_id != null) return a.message_id - b.message_id;
+    return a.gameNum - b.gameNum;
+  });
+}
+NS.sortChrono = sortChrono;
+
 NS.predictNext = function(ctx, state = {}) {
-  // Sort by seq (monotonic, never wraps) when available; fallback gameNum for legacy data
-  const sorted = [...ctx].sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
+  const sorted = sortChrono(ctx);
   const playerMode = (state.lossStreakP1 && state.lossStreakP1 >= 1) ? 'rattrapage' : 'normal';
   const bankerMode = (state.lossStreakP2 && state.lossStreakP2 >= 1) ? 'rattrapage' : 'normal';
   const player = predictSide(sorted, 'p1', playerMode, playerMode==='rattrapage' ? (state.lastBest?.p1 || null) : null);
   const banker = predictSide(sorted, 'p2', bankerMode, bankerMode==='rattrapage' ? (state.lastBest?.p2 || null) : null);
   const recommendation = computeRecommendation(player, banker);
   const last = sorted.length ? sorted[sorted.length-1] : null;
-  // gameNumNext = gameNum+1, but if hit reset threshold (e.g. ≥1440), display "#1 (nouvelle session)"
-  let gameNumNext = null;
-  if (last) {
-    gameNumNext = last.gameNum + 1;
-  }
+  // Predict the next hand number based purely on the last hand seen,
+  // regardless of whether numbering reset at midnight. If last was #1440
+  // and next will be #1, the channel will tell us — we just label
+  // "after #1440". UI shows "#?" if just-after-reset is unknown.
   return {
-    gameNumNext,
-    basedOn: sorted.length,
+    gameNumNext: last ? last.gameNum + 1 : null,
     lastGameNum: last ? last.gameNum : null,
-    lastSession: last ? (last.session ?? 1) : null,
+    basedOn: sorted.length,
     player, banker,
     recommendation,
   };
@@ -279,7 +290,7 @@ function computeRecommendation(p, b) {
  * Useful for the "Performances" panel (last 50 hands).
  */
 NS.backtest = function(hands, windowFromEnd = null) {
-  const sorted = [...hands].sort((a,b) => (a.seq ?? a.gameNum) - (b.seq ?? b.gameNum));
+  const sorted = sortChrono(hands);
   const startIdx = windowFromEnd ? Math.max(30, sorted.length - windowFromEnd) : 30;
   const stats = {
     n: 0,
@@ -339,8 +350,7 @@ NS.backtest = function(hands, windowFromEnd = null) {
     lastBestP1 = p.best; lastBestP2 = b.best;
     stats.history.push({
       gameNum: actual.gameNum,
-      seq: actual.seq,
-      session: actual.session,
+      message_id: actual.message_id,
       raw: actual.raw,
       pred_p1: p.best, conf_p1: p.confidence, mode_p1: playerMode,
       pred_p2: b.best, conf_p2: b.confidence, mode_p2: bankerMode,
