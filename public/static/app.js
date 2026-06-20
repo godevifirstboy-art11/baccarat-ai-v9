@@ -23,6 +23,7 @@ const State = {
   nextSeq: 1,
   currentSession: 1,
   forceNewSessionOnNext: false, // armed by user via "Reset detected" button
+  lastSeenMessageId: 0,         // monotonic — used by doFetchTick to detect new hands
 };
 
 // ────────────────────── STORAGE ──────────────────────
@@ -205,6 +206,22 @@ function renderShell() {
         <button class="btn-icon" id="btn-reload-deep" title="Recharger l'historique profond">⬇</button>
       </div>
     </header>
+
+    <!-- Sync banner: proves the N+1 alignment to the user -->
+    <section class="sync-banner" id="sync-banner">
+      <div class="sync-step sync-past">
+        <div class="sync-step-label">Dernière main vue</div>
+        <div class="sync-step-value mono" id="sync-last">#— · —</div>
+        <div class="sync-step-sub" id="sync-last-suits">en attente du flux Telegram</div>
+      </div>
+      <div class="sync-arrow">→</div>
+      <div class="sync-step sync-future">
+        <div class="sync-step-label">Prédiction pour</div>
+        <div class="sync-step-value mono" id="sync-next">#—</div>
+        <div class="sync-step-sub" id="sync-next-sub">la prochaine main à venir</div>
+      </div>
+      <div class="sync-clock" id="sync-clock" title="Âge de la prédiction">—</div>
+    </section>
 
     <section class="predict-hero">
       <div class="pred-card" data-side="player" id="card-player">
@@ -499,6 +516,25 @@ function renderPrediction() {
     sessChip.classList.toggle('multi-session', State.currentSession > 1);
   }
 
+  // Sync banner — visual proof of the N → N+1 contract.
+  // Left side  : last hand actually observed on Telegram (= N)
+  // Right side : the hand the prediction is for (= N+1)
+  const obs = p._lastHandObserved;
+  const fut = p._predictedFor;
+  if (obs && fut) {
+    const lastSuitsP1 = obs.p1_suits.map(s =>
+      `<span class="sync-suit-mini ${V9.isRed(s)?'red':'black'}">${s}</span>`).join('');
+    const lastSuitsP2 = obs.p2_suits.map(s =>
+      `<span class="sync-suit-mini ${V9.isRed(s)?'red':'black'}">${s}</span>`).join('');
+    document.getElementById('sync-last').innerHTML =
+      `#${obs.gameNum}` + (obs.session > 1 ? ` <span class="sync-sess">S${obs.session}</span>` : '');
+    document.getElementById('sync-last-suits').innerHTML =
+      `<span class="sync-row"><span class="sync-side">J</span>${lastSuitsP1}</span>` +
+      `<span class="sync-row"><span class="sync-side">B</span>${lastSuitsP2}</span>`;
+    document.getElementById('sync-next').textContent = `#${fut.gameNum}`;
+    document.getElementById('sync-next-sub').textContent = 'projection +1 main · non encore distribuée';
+  }
+
   renderSideCard('p1', p.player, '#card-player');
   renderSideCard('p2', p.banker, '#card-banker');
 
@@ -717,36 +753,154 @@ async function renderEmpirical() {
   }
 }
 
-// ────────────────────── MAIN UPDATE LOOP ──────────────────────
-function recomputeAll() {
-  if (State.hands.length < 5) return;
-  // Run engine on current hands → prediction for next
-  const fresh = State.hands.slice().sort((a,b)=>a.gameNum - b.gameNum);
-  // Compute current streak state from rolling backtest
-  const bt50 = V9.backtest(fresh, 50);
-  State.backtest = bt50;
-  const btFull = V9.backtest(fresh);
-  State.backtestFull = btFull;
-  // Prediction with current losing streak (taken from full backtest)
-  const state = {
+// ════════════════════════════════════════════════════════════════════
+// PROCESS PREDICTION — N+1 INDEXING CONTRACT
+// ════════════════════════════════════════════════════════════════════
+//
+// Strict invariant enforced by this function:
+//
+//   sortedChrono[0]              = oldest hand on record
+//   sortedChrono[length - 1]     = the IMMEDIATE PAST hand (index N)
+//                                  → the last hand actually played and
+//                                    visible on the Telegram channel
+//   prediction                   = the NEXT hand to be played (index N+1)
+//                                  → the hand currently being dealt at
+//                                    the table, NOT yet on Telegram
+//
+// All 6 sub-engines (FREQ, COVERAGE, MARKOV 1&2, MOMENTUM, COLOR,
+// LEAST_RECENT) receive the SAME chronologically sorted context. They
+// each take `ctx.slice(-K)` so they all read the same recent window
+// ending at index N. The Markov chain explicitly uses `seq[seq.length-1]`
+// as the conditioning state, ensuring the transition is computed FROM
+// the immediate past TO the future, never the other way around.
+//
+// Returns the prediction object enriched with timing metadata so the UI
+// can display both N (last seen) and N+1 (predicted) explicitly.
+// ════════════════════════════════════════════════════════════════════
+function processPrediction(hands) {
+  if (!hands || hands.length < 5) return null;
+
+  // Step 1 — Sort chronologically. Order of priority:
+  //   1) seq      (client-assigned, monotonic, never wraps, RESET-PROOF)
+  //   2) message_id (Telegram post id, monotonic by time)
+  //   3) gameNum  (last resort — wraps daily, only OK within single day)
+  const sorted = hands.slice().sort((a, b) => {
+    const sa = a.seq, sb = b.seq;
+    if (sa != null && sb != null && sa !== sb) return sa - sb;
+    const ma = a.message_id, mb = b.message_id;
+    if (ma != null && mb != null && ma !== mb) return ma - mb;
+    return (a.gameNum ?? 0) - (b.gameNum ?? 0);
+  });
+
+  // Step 2 — Define N (last observed) and N+1 (target of the prediction).
+  const lastHand = sorted[sorted.length - 1];
+  const N        = lastHand.gameNum;
+  const Nplus1   = N + 1;
+
+  // Step 3 — Backtest first so we know loss streak / last best prediction.
+  // Backtest replays predictions across the WHOLE history, so this is the
+  // ground truth for the engine's current state.
+  const bt50    = V9.backtest(sorted, 50);
+  const btFull  = V9.backtest(sorted);
+
+  // Step 4 — Build the runtime state object the engine needs.
+  const engineState = {
     lossStreakP1: btFull.current_loss_p1,
     lossStreakP2: btFull.current_loss_p2,
     lastBest: {
-      p1: btFull.history.length ? btFull.history[btFull.history.length-1].pred_p1 : null,
-      p2: btFull.history.length ? btFull.history[btFull.history.length-1].pred_p2 : null,
-    }
+      p1: btFull.history.length ? btFull.history[btFull.history.length - 1].pred_p1 : null,
+      p2: btFull.history.length ? btFull.history[btFull.history.length - 1].pred_p2 : null,
+    },
   };
-  State.prediction = V9.predictNext(fresh, state);
+
+  // Step 5 — Call the engine. predictNext applies sortChrono internally
+  // again as a safety net, then forwards `sorted` to all 6 sub-engines
+  // simultaneously. Every sub-engine reads ctx.slice(-K), meaning they
+  // ALL anchor on the same hand N. Markov explicitly conditions on
+  // seq[seq.length-1] = the suit of hand N. The fusion result is the
+  // probability distribution for hand N+1.
+  const prediction = V9.predictNext(sorted, engineState);
+
+  // Step 6 — Annotate the prediction with timing metadata so the UI
+  // can prove to the user that we are NOT echoing the last hand.
+  prediction._lastHandObserved = {
+    gameNum:   N,
+    session:   lastHand.session,
+    seq:       lastHand.seq,
+    p1_first:  lastHand.p1_first,
+    p2_first:  lastHand.p2_first,
+    p1_suits:  lastHand.p1_suits,
+    p2_suits:  lastHand.p2_suits,
+  };
+  prediction._predictedFor = {
+    gameNum: Nplus1,
+    session: lastHand.session, // same session as long as no new reset
+    // index = the position this prediction would occupy if/when it appears
+    indexInHistory: sorted.length, // 0-based; equals sorted.length-1 of N + 1
+  };
+  prediction._timing = {
+    computedAt:  Date.now(),
+    basedOn:     sorted.length,
+    historyTail: sorted.slice(-3).map(h => `#${h.gameNum}(s${h.session})`),
+  };
+
+  return { prediction, backtest: bt50, backtestFull: btFull };
+}
+
+// ────────────────────── MAIN UPDATE LOOP ──────────────────────
+// recomputeAll() is now a thin wrapper around processPrediction() that
+// just wires the result into State + triggers re-render. The actual
+// prediction logic and the N+1 contract live entirely in processPrediction().
+function recomputeAll() {
+  const result = processPrediction(State.hands);
+  if (!result) return;
+  State.prediction   = result.prediction;
+  State.backtest     = result.backtest;
+  State.backtestFull = result.backtestFull;
   renderPrediction();
   renderMetrics();
   renderHistory();
   renderBacktest();
 }
 
+// ════════════════════════════════════════════════════════════════════
+// doFetchTick — POLLING WITH CACHE INVALIDATION + N+1 ENFORCEMENT
+// ════════════════════════════════════════════════════════════════════
+//
+// On every poll (every 7s OR manual refresh):
+//
+//   1. Pull the latest feed from Telegram.
+//   2. Identify the latest message_id in the fresh batch.
+//   3. Compare with State.lastSeenMessageId (the LAST message we
+//      processed in a prior tick). Three cases:
+//
+//      (a) newMid === State.lastSeenMessageId
+//          → No new hand on the channel. Skip recompute. Keep showing
+//            the prediction for the same N+1 (still valid).
+//
+//      (b) newMid > State.lastSeenMessageId
+//          → A NEW hand has been published. This is the moment of truth:
+//            the prediction we were displaying was for THIS hand. Now we
+//            ingest it, IMMEDIATELY invalidate State.prediction (so the
+//            UI cannot accidentally show the previous prediction echoing
+//            the just-arrived hand), then call processPrediction() to
+//            compute the prediction for N+2 (the next hand after the
+//            one we just received).
+//
+//      (c) newMid < State.lastSeenMessageId (edge case)
+//          → Telegram returned older data than what we already have.
+//            Ignore — keep prior state.
+//
+//   4. Force a recompute on every NEW-HAND tick. This guarantees the
+//      prediction shown to the user is ALWAYS one step ahead, never
+//      lagging behind. The user sees the prediction for hand #(N+1)
+//      where N = the latest hand on the channel right now.
+// ════════════════════════════════════════════════════════════════════
 async function doFetchTick(force=false) {
   if (State.loading) return;
   State.loading = true;
   setStatus('loading','Sync…');
+
   const fresh = await fetchLive();
   State.loading = false;
   if (fresh === null) {
@@ -754,22 +908,70 @@ async function doFetchTick(force=false) {
     if (force) showToast('Échec de la connexion Telegram', 'error');
     return;
   }
+
+  // STEP A — Identify the newest message_id in the fresh feed.
+  const newMid = fresh.length
+    ? Math.max(...fresh.map(h => h.message_id || 0))
+    : null;
+
+  // STEP B — Compare to the last id we ever processed.
+  const prevMid = State.lastSeenMessageId || 0;
+  const isNewHand     = newMid && newMid > prevMid;
+  const isSameAsBefore = newMid && newMid === prevMid;
+  const isStale       = newMid && newMid < prevMid;
+
+  // STEP C — On a new hand: invalidate the cached prediction NOW, before
+  // anything is re-rendered. This prevents any UI race where the previous
+  // prediction (which was made FOR the hand that just arrived) could
+  // remain on screen for a frame and be confused with a prediction for
+  // the NEXT hand.
+  if (isNewHand) {
+    State.prediction   = null;   // hard invalidate
+    State.lastSeenMessageId = newMid;
+  } else if (isStale) {
+    // Telegram regressed → ignore, keep state
+    setStatus('live','En direct');
+    if (force) showToast('Aucune nouvelle main', 'success');
+    return;
+  }
+
+  // STEP D — Merge the fresh hands into the persistent store. mergeHands
+  // is reset-aware (handles midnight #1440 → #1) and assigns monotonic
+  // `seq` values so the engine's chronological sort never breaks.
   const beforeSession = State.currentSession;
-  const before = State.hands.length;
-  const forceNew = State.forceNewSessionOnNext;
+  const before        = State.hands.length;
+  const forceNew      = State.forceNewSessionOnNext;
   State.hands = mergeHands(State.hands, fresh, forceNew);
   if (forceNew) {
     State.forceNewSessionOnNext = false;
     const btn = document.getElementById('btn-new-session');
     if (btn) { btn.classList.remove('armed'); btn.textContent = '🔄 Nouvelle session'; }
   }
+
   const newCount = State.hands.length - before;
   const newSessionDetected = State.currentSession > beforeSession;
   saveHands(State.hands);
   setStatus('live','En direct');
-  recomputeAll();
+
+  // STEP E — Force recompute on:
+  //   - new hand arrived (mandatory)  → moves prediction from N+1 to N+2
+  //   - manual refresh button         → user wants a fresh calculation
+  //   - first ever fetch              → there was no prediction yet
+  // We DO NOT recompute on a pure no-op poll, to save CPU and keep the
+  // UI stable between hands.
+  const shouldRecompute = isNewHand || force || !State.prediction;
+  if (shouldRecompute) {
+    recomputeAll();
+  }
+
+  // STEP F — User feedback.
   if (newSessionDetected) {
     showToast(`🔄 Nouvelle session détectée (#${State.currentSession}) — recalibrage en cours`, 'success');
+  } else if (isNewHand) {
+    const lastH = State.hands[State.hands.length - 1];
+    showToast(`🎴 Nouvelle main #${lastH.gameNum} reçue → prédiction recalculée pour #${lastH.gameNum + 1}`, 'success');
+  } else if (force && isSameAsBefore) {
+    showToast('Aucune nouvelle main — prédiction toujours valable', 'success');
   } else if (force) {
     showToast(newCount ? `+${newCount} nouvelle(s) main(s)` : 'Aucune nouvelle main', 'success');
   }
@@ -798,17 +1000,53 @@ async function doDeepReload() {
 async function boot() {
   renderShell();
   renderEmpirical();
-  // 1) Load cached hands
+
+  // 1) Load cached hands from localStorage (with v1→v2 migration if needed)
   State.hands = loadHands();
-  // 2) If small, do a deep scrape immediately
+
+  // 2) Reconstruct lastSeenMessageId from the cache so that, after a
+  //    page reload, doFetchTick correctly recognises "already seen"
+  //    hands and only triggers a recompute when something is truly new.
+  if (State.hands.length) {
+    State.lastSeenMessageId = State.hands.reduce(
+      (max, h) => Math.max(max, h.message_id || 0), 0
+    );
+    State.currentSession = State.hands.reduce(
+      (max, h) => Math.max(max, h.session || 1), 1
+    );
+  }
+
+  // 3) If we don't have enough data, do a deep scrape immediately
   if (State.hands.length < 200) {
     await doDeepReload();
   } else {
     recomputeAll();
     await doFetchTick();
   }
-  // 3) Start poll
+
+  // 4) Start the polling loop. Each tick will:
+  //      - skip if no new hand has appeared on Telegram
+  //      - invalidate the cached prediction + force a recompute as soon
+  //        as a new hand arrives, projecting to N+1
   setInterval(() => doFetchTick(), POLL_INTERVAL);
+
+  // 5) Tick the prediction-age clock every second so the user can see
+  //    how fresh the current N+1 projection is. Pure UI, no recompute.
+  setInterval(updateSyncClock, 1000);
+}
+
+function updateSyncClock() {
+  const el = document.getElementById('sync-clock');
+  if (!el || !State.prediction || !State.prediction._timing) return;
+  const ageMs = Date.now() - State.prediction._timing.computedAt;
+  const ageS  = Math.floor(ageMs / 1000);
+  let label, cls;
+  if (ageS < 5)        { label = `🟢 ${ageS}s`;  cls = 'fresh';  }
+  else if (ageS < 30)  { label = `🟢 ${ageS}s`;  cls = 'fresh';  }
+  else if (ageS < 90)  { label = `🟡 ${ageS}s`;  cls = 'aging';  }
+  else                 { label = `🔴 ${Math.floor(ageS/60)}m${ageS%60}s`; cls = 'stale'; }
+  el.textContent = label;
+  el.className = 'sync-clock ' + cls;
 }
 
 // Kick

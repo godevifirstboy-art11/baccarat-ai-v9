@@ -92,19 +92,28 @@ app.get('/api/telegram/feed', async (c) => {
   const channel = c.req.query('channel') || DEFAULT_CHANNEL
   try {
     const page1 = await fetchTelegramPage(channel)
-    if (page1.length === 0) return c.json({ ok: true, channel, count: 0, hands: [] })
+    if (page1.length === 0) return c.json({ ok: true, channel, count: 0, hands: [], fetchedAt: Date.now() })
     const oldestMid = Math.min(...page1.map(m => m.message_id))
     const page2 = await fetchTelegramPage(channel, oldestMid).catch(() => [])
     const oldestMid2 = page2.length ? Math.min(...page2.map(m => m.message_id)) : oldestMid
     const page3 = page2.length ? await fetchTelegramPage(channel, oldestMid2).catch(() => []) : []
     const all = [...page1, ...page2, ...page3]
-    const byGame = new Map<number, RawMessage>()
-    for (const m of all) {
-      const ex = byGame.get(m.gameNum)
-      if (!ex || m.message_id > ex.message_id) byGame.set(m.gameNum, m)
-    }
-    const sorted = [...byGame.values()].sort((a, b) => a.gameNum - b.gameNum)
-    return c.json({ ok: true, channel, count: sorted.length, hands: sorted, fetchedAt: Date.now() })
+    // Dedup by message_id (each Telegram post has a unique id, monotonic in time).
+    // This is reset-proof: two different days with gameNum=#1 have DIFFERENT message_ids.
+    const byMid = new Map<number, RawMessage>()
+    for (const m of all) byMid.set(m.message_id, m)
+    // Sort by message_id ascending = strict chronological order (oldest first).
+    const sorted = [...byMid.values()].sort((a, b) => a.message_id - b.message_id)
+    const last = sorted[sorted.length - 1] || null
+    return c.json({
+      ok: true,
+      channel,
+      count: sorted.length,
+      hands: sorted,
+      lastMessageId: last?.message_id ?? null,
+      lastGameNum:   last?.gameNum    ?? null,
+      fetchedAt: Date.now(),
+    })
   } catch (e: any) {
     return c.json({ ok: false, error: String(e) }, 502)
   }
@@ -118,23 +127,31 @@ app.get('/api/telegram/deep', async (c) => {
   const channel = c.req.query('channel') || DEFAULT_CHANNEL
   const pages = Math.max(1, Math.min(50, parseInt(c.req.query('pages') || '15', 10)))
   try {
-    const all = new Map<number, RawMessage>()
+    // Dedup by message_id — same gameNum across days has different message_ids.
+    const byMid = new Map<number, RawMessage>()
     let before: number | undefined = undefined
     let lastMin: number | undefined = undefined
     for (let i = 0; i < pages; i++) {
       const page = await fetchTelegramPage(channel, before)
       if (page.length === 0) break
       const minMid = Math.min(...page.map(m => m.message_id))
-      for (const m of page) {
-        const ex = all.get(m.gameNum)
-        if (!ex || m.message_id > ex.message_id) all.set(m.gameNum, m)
-      }
+      for (const m of page) byMid.set(m.message_id, m)
       if (lastMin !== undefined && minMid >= lastMin) break // no progress
       lastMin = minMid
       before = minMid
     }
-    const sorted = [...all.values()].sort((a, b) => a.gameNum - b.gameNum)
-    return c.json({ ok: true, channel, pages, count: sorted.length, hands: sorted, fetchedAt: Date.now() })
+    const sorted = [...byMid.values()].sort((a, b) => a.message_id - b.message_id)
+    const last = sorted[sorted.length - 1] || null
+    return c.json({
+      ok: true,
+      channel,
+      pages,
+      count: sorted.length,
+      hands: sorted,
+      lastMessageId: last?.message_id ?? null,
+      lastGameNum:   last?.gameNum    ?? null,
+      fetchedAt: Date.now(),
+    })
   } catch (e: any) {
     return c.json({ ok: false, error: String(e) }, 502)
   }
